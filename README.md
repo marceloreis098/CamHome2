@@ -50,23 +50,21 @@ npm -v
 ```
 
 ### Passo 3: Baixar e Instalar o CamHome
-Agora que o `npm` (v10+) e `node` (v20+) estão confirmados:
+
+**ATENÇÃO:** Se você já clonou o repositório anteriormente, pule o comando `git clone`.
 
 ```bash
-# 1. Clonar o repositório (Se já clonou, apenas entre na pasta)
+# 1. Clonar (APENAS SE A PASTA AINDA NÃO EXISTIR)
+# Se aparecer erro "already exists", PULE este comando e apenas entre na pasta.
 git clone https://github.com/marceloreis098/CamHome.git
 
 # 2. Entrar na pasta do projeto
 cd CamHome
 
-# 3. Instalar dependências
-npm install
-
-# 4. Compilar o projeto (Frontend)
-npm run build
+# 3. Instalar dependências e Aplicar Correções
+npm run update
+# Este comando faz tudo: instala, compila o site e reinicia o servidor.
 ```
-
-**Se o build funcionar, você verá: `✨ Built in X.XXs` e uma pasta `dist` será criada.**
 
 ### Passo 4: Configurar o Servidor Web (Nginx com Proxy API)
 
@@ -153,24 +151,21 @@ sudo pm2 save
 
 ---
 
-## 🌐 Como Acessar
+## 🆘 Solução de Erros Comuns
 
-1. Descubra o IP do seu Orange Pi: `hostname -I`
-2. Acesse no navegador: `http://SEU_IP` (Ex: `http://192.168.1.55`)
-3. **Login Padrão**:
-   - Usuário: `admin`
-   - Senha: `password`
+**Erro: `fatal: destination path 'CamHome' already exists`**
+- **Causa:** Você está tentando baixar o projeto numa pasta onde ele já existe.
+- **Solução:** Não rode `git clone`. Apenas entre na pasta com `cd CamHome` e rode `npm run update`.
 
----
-
-## 🆘 Solução de Erros
-
-**Erro: `Unexpected token '<'` ao escanear**
-- **Causa:** O Nginx não está configurado corretamente para repassar `/api/` para o Node.js.
-- **Solução:** Refaça o passo 5 copiando o código Nginx atualizado.
+**Erro: `502 Bad Gateway`**
+- **Causa:** O servidor backend (Node.js) não está rodando.
+- **Solução:** Dentro da pasta CamHome, rode `pm2 restart camhome-backend` ou `sudo node server.js`.
 
 **Erro: `Nmap not found`**
 - **Solução:** `sudo apt install nmap`
+
+**Erro: Câmera com Tela Preta ou Carregando Infinitamente**
+- **Solução:** Instale o FFMPEG: `sudo apt install ffmpeg`. O sistema agora usa um modo híbrido robusto que corrige falhas de autenticação.
 
 ---
 **Desenvolvido por Marcelo Reis**

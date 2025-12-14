@@ -421,7 +421,6 @@ app.get('/api/proxy', async (req, res) => {
 
             ffmpeg.stderr.on('data', d => {
                 // FFMPEG stderr output (errors/warnings)
-                // console.log(`[FFMPEG Proxy Log] ${d}`);
             });
             
             return;
@@ -501,7 +500,23 @@ app.get('/api/scan', (req, res) => {
     });
 });
 
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
+// Fallback for SPA (Single Page Application)
+app.get('*', (req, res) => {
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(503).send(`
+            <html>
+                <body style="font-family:sans-serif; background:#111; color:#ccc; text-align:center; padding-top:50px;">
+                    <h1>Sistema Inicializando...</h1>
+                    <p>O arquivo de interface (index.html) ainda não foi gerado.</p>
+                    <p>Por favor, aguarde alguns segundos e recarregue a página.</p>
+                </body>
+            </html>
+        `);
+    }
+});
 
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
