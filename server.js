@@ -3,6 +3,7 @@ const path = require('path');
 const { exec, spawn } = require('child_process');
 const os = require('os');
 const fs = require('fs');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -338,32 +339,100 @@ app.post('/api/config', (req, res) => {
     res.json({success:true}); 
 });
 
-// --- SAFE PROXY ---
+// --- HYBRID PROXY: FETCH -> Fallback to FFMPEG (Robust Auth) ---
 app.get('/api/proxy', async (req, res) => {
     try {
-        if (typeof fetch === 'undefined') {
-            throw new Error("Node 20+ required");
-        }
         const { url, username, password } = req.query;
         if (!url) throw new Error("URL missing");
         
+        // 1. Try Standard HTTP Fetch first (Low latency)
+        // We use a short timeout because if it hangs, we want to fallback to FFMPEG quickly.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+
         const headers = {};
-        if (username) headers['Authorization'] = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
-        
-        // 5s Timeout to prevent hanging
-        const response = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
-        
-        if (!response.ok) {
-            console.error(`[Proxy] Camera returned ${response.status} for ${url}`);
-            throw new Error(`Cam returned ${response.status}`);
+        // Basic Auth Header
+        if (username && password) {
+            headers['Authorization'] = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
         }
-        
-        const buf = await response.arrayBuffer();
-        res.set('Content-Type', response.headers.get('content-type') || 'image/jpeg');
-        res.send(Buffer.from(buf));
+
+        try {
+            const response = await fetch(url, { 
+                headers, 
+                signal: controller.signal 
+            });
+            clearTimeout(timeoutId);
+
+            if (response.ok) {
+                const buf = await response.arrayBuffer();
+                res.set('Content-Type', response.headers.get('content-type') || 'image/jpeg');
+                return res.send(Buffer.from(buf));
+            }
+            
+            // If we get here, response is not OK (e.g. 401 Unauthorized, 500, etc)
+            // If it's a 4xx/5xx, we might want to try FFMPEG as it handles Digest Auth and other quirks better.
+            console.warn(`[Proxy] Direct fetch failed (${response.status}), attempting fallback...`);
+
+        } catch (fetchError) {
+            clearTimeout(timeoutId);
+            console.warn(`[Proxy] Direct fetch exception: ${fetchError.message}, attempting fallback...`);
+        }
+
+        // 2. FFMPEG Fallback (High compatibility)
+        // Use FFMPEG to grab the frame. It handles Digest Auth, redirections, and broken headers well.
+        if (IS_FFMPEG_INSTALLED) {
+            // Embed credentials in URL for FFMPEG
+            let authUrl = url;
+            if (username && password) {
+                try {
+                    // Inject into URL object to handle encoding safely
+                    const urlObj = new URL(url);
+                    // Only set if not already present to avoid overriding
+                    if (!urlObj.username) urlObj.username = username;
+                    if (!urlObj.password) urlObj.password = password;
+                    authUrl = urlObj.toString();
+                } catch (e) {
+                    // Fallback to simple string replacement if URL parsing fails (unlikely)
+                    authUrl = url.replace('://', `://${username}:${password}@`);
+                }
+            }
+
+            const args = [
+                '-y',
+                '-hide_banner', '-loglevel', 'error',
+                '-stimeout', '5000000', // 5s timeout
+                '-i', authUrl,
+                '-frames:v', '1',
+                '-f', 'image2',
+                '-update', '1',
+                '-' // Output to pipe
+            ];
+
+            const ffmpeg = spawn('ffmpeg', args);
+            
+            // Pipe FFMPEG stdout directly to response
+            res.contentType('image/jpeg');
+            ffmpeg.stdout.pipe(res);
+
+            ffmpeg.on('error', (err) => {
+                console.error('[Proxy] FFMPEG Fallback Error:', err);
+                if(!res.headersSent) res.status(502).send("Proxy failed (FFMPEG Error)");
+            });
+
+            ffmpeg.stderr.on('data', d => {
+                // FFMPEG stderr output (errors/warnings)
+                // console.log(`[FFMPEG Proxy Log] ${d}`);
+            });
+            
+            return;
+        }
+
+        // If we reached here: Fetch failed AND FFMPEG is not installed.
+        res.status(502).send("Proxy failed: Could not connect to camera and FFMPEG is missing.");
+
     } catch (e) {
-        console.error(`[Proxy Error] ${e.message} for ${req.query.url}`);
-        res.status(502).send(e.message);
+        console.error(`[Proxy Fatal] ${e.message}`);
+        if(!res.headersSent) res.status(500).send(e.message);
     }
 });
 
@@ -374,45 +443,27 @@ app.get('/api/rtsp-snapshot', (req, res) => {
     let { url } = req.query;
     if (!url) return res.status(400).send('RTSP URL missing');
 
-    // args: connect via TCP (stable), timeout 5s, grab 1 frame, scale to 640x360 (fast), quality 5
     const args = [
         '-y',
         '-stimeout', '5000000', // 5s timeout for connection
-        '-rtsp_transport', 'tcp',
+        '-rtsp_transport', 'tcp', // Force TCP for reliability
         '-i', url,
         '-f', 'image2',
         '-vframes', '1',
-        '-s', '640x360',
-        '-q:v', '10',
-        '-' // output to stdout
+        '-s', '640x360', // Downscale for performance
+        '-q:v', '15',    // Lower quality for speed (1-31)
+        '-' 
     ];
 
     const ffmpeg = spawn('ffmpeg', args);
-    let chunks = [];
-    let hasError = false;
-
-    ffmpeg.stdout.on('data', (chunk) => {
-        chunks.push(chunk);
-    });
-
-    ffmpeg.stderr.on('data', (data) => {
-        // Optional: console.log(`[FFMPEG Log] ${data}`);
-    });
+    
+    // Pipe directly for lower latency / memory usage
+    res.contentType('image/jpeg');
+    ffmpeg.stdout.pipe(res);
 
     ffmpeg.on('error', (err) => {
         console.error('[Snapshot] FFMPEG Spawn Error:', err);
-        hasError = true;
-    });
-
-    ffmpeg.on('close', (code) => {
-        if (code === 0 && chunks.length > 0 && !hasError) {
-            const img = Buffer.concat(chunks);
-            res.contentType('image/jpeg');
-            res.send(img);
-        } else {
-            console.error(`[Snapshot] Failed with code ${code}. Url: ${url}`);
-            if(!res.headersSent) res.status(502).send("Snapshot failed");
-        }
+        if(!res.headersSent) res.status(502).send("Snapshot failed");
     });
 });
 

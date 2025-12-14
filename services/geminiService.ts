@@ -1,22 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 
-const getGeminiClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    console.warn("Gemini API Key is missing. AI features will not work.");
-    return null;
-  }
-  return new GoogleGenAI({ apiKey });
-};
-
 export const analyzeFrame = async (base64Image: string): Promise<string> => {
-  const client = getGeminiClient();
-  if (!client) {
-    return "API Key missing. Cannot analyze image.";
-  }
+  // Initialize client directly with process.env.API_KEY as per guidelines.
+  // We assume the key is pre-configured and valid.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
-    const response = await client.models.generateContent({
+    const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: {
         parts: [
