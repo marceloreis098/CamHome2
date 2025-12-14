@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { RecordedMedia } from '../types';
 import { fetchRecordings } from '../services/mockCameraService';
-import { PhotoIcon, SparklesIcon, TagIcon, XMarkIcon } from './Icons';
+import { PhotoIcon, SparklesIcon, TagIcon, XMarkIcon, ExclamationCircleIcon } from './Icons';
 
 const LibraryPanel: React.FC = () => {
   const [media, setMedia] = useState<RecordedMedia[]>([]);
@@ -10,6 +10,7 @@ const LibraryPanel: React.FC = () => {
   
   // Video Playback State
   const [selectedVideo, setSelectedVideo] = useState<RecordedMedia | null>(null);
+  const [videoError, setVideoError] = useState(false);
 
   useEffect(() => {
     fetchRecordings().then(data => {
@@ -28,6 +29,11 @@ const LibraryPanel: React.FC = () => {
     if (!url) return '';
     const isDev = process.env.NODE_ENV === 'development' || window.location.port === '1234';
     return isDev ? `http://${window.location.hostname}:3000${url}` : url;
+  };
+
+  const handleOpenVideo = (item: RecordedMedia) => {
+      setVideoError(false);
+      setSelectedVideo(item);
   };
 
   return (
@@ -63,7 +69,7 @@ const LibraryPanel: React.FC = () => {
             <div 
                 key={item.id} 
                 className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden shadow-lg group cursor-pointer hover:border-orange-500 transition-colors"
-                onClick={() => setSelectedVideo(item)}
+                onClick={() => handleOpenVideo(item)}
             >
               <div className="relative aspect-video bg-black flex items-center justify-center">
                 <img 
@@ -127,27 +133,50 @@ const LibraryPanel: React.FC = () => {
                     </button>
                 </div>
                 
-                <div className="aspect-video bg-black relative">
-                    {/* The video tag automatically uses the browser's native controls */}
-                    <video 
-                        src={getFullUrl(selectedVideo.videoUrl || '')} 
-                        controls 
-                        autoPlay 
-                        className="w-full h-full"
-                    >
-                        Seu navegador não suporta a tag de vídeo.
-                    </video>
+                <div className="aspect-video bg-black relative flex items-center justify-center">
+                    {!videoError ? (
+                        <video 
+                            src={getFullUrl(selectedVideo.videoUrl || '')} 
+                            controls 
+                            autoPlay 
+                            className="w-full h-full"
+                            onError={() => setVideoError(true)}
+                        >
+                            Seu navegador não suporta a tag de vídeo.
+                        </video>
+                    ) : (
+                        <div className="text-center p-8">
+                            <ExclamationCircleIcon className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+                            <h4 className="text-white font-bold text-lg">Erro na Reprodução</h4>
+                            <p className="text-gray-400 text-sm mt-2 max-w-md mx-auto">
+                                O navegador não conseguiu reproduzir este vídeo. Isso geralmente ocorre se a câmera usa o codec <b>H.265 (HEVC)</b>, que não é suportado nativamente pelo Chrome/Firefox.
+                            </p>
+                            <p className="text-gray-400 text-sm mt-2">
+                                Por favor, baixe o arquivo para visualizar no seu computador.
+                            </p>
+                            <a 
+                                href={getFullUrl(selectedVideo.videoUrl || '')} 
+                                download 
+                                className="mt-6 inline-block px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors"
+                            >
+                                Baixar Arquivo de Vídeo
+                            </a>
+                        </div>
+                    )}
                 </div>
 
-                <div className="p-4 bg-gray-900 flex justify-end gap-2">
-                    <a 
-                        href={getFullUrl(selectedVideo.videoUrl || '')} 
-                        download 
-                        className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm rounded transition-colors"
-                    >
-                        Baixar Arquivo
-                    </a>
-                </div>
+                {!videoError && (
+                    <div className="p-4 bg-gray-900 flex justify-between items-center">
+                         <span className="text-xs text-gray-500 italic">Se o vídeo não carregar ou ficar preto, verifique se a câmera está configurada como H.264.</span>
+                        <a 
+                            href={getFullUrl(selectedVideo.videoUrl || '')} 
+                            download 
+                            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm rounded transition-colors"
+                        >
+                            Baixar Arquivo
+                        </a>
+                    </div>
+                )}
             </div>
          </div>
       )}

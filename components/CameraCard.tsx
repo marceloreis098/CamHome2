@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Camera, CameraStatus } from '../types';
-import { SignalIcon, SparklesIcon, PhotoIcon } from './Icons';
+import { SignalIcon, SparklesIcon, PhotoIcon, ExclamationCircleIcon } from './Icons';
 import { analyzeFrame } from '../services/geminiService';
 
 interface CameraCardProps {
@@ -14,18 +14,21 @@ const CameraCard: React.FC<CameraCardProps> = ({ camera }) => {
   // Refresh mechanism for Live View (simulating video via snapshots)
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [isLive, setIsLive] = useState(true);
-  const [imgError, setImgError] = useState(false);
+  const [imgStatus, setImgStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
-    if (isLive && !imgError) {
-        // Refresh every 1.5 seconds to balance load vs fluidity
+    if (isLive) {
+        // Refresh every 5 seconds to prevent overwhelming the server FFMPEG process
+        // RTSP snapshots are heavy operations.
         interval = setInterval(() => {
             setRefreshTrigger(prev => prev + 1);
-        }, 1500);
+            setImgStatus('loading');
+        }, 5000);
     }
     return () => clearInterval(interval);
-  }, [isLive, imgError]);
+  }, [isLive, retryCount]);
 
   // Use the Backend Proxy to fetch images. 
   // This solves CORS issues and Credential stripping by browsers.
@@ -82,7 +85,7 @@ const CameraCard: React.FC<CameraCardProps> = ({ camera }) => {
         };
         reader.readAsDataURL(blob);
     } catch (e) {
-      setAnalysis("Não foi possível capturar o frame para análise.");
+      setAnalysis("Não foi possível capturar o frame para análise. Verifique se a câmera está online.");
       setIsAnalyzing(false);
     }
   };
@@ -97,53 +100,73 @@ const CameraCard: React.FC<CameraCardProps> = ({ camera }) => {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl overflow-hidden shadow-lg border border-gray-700 flex flex-col">
+    <div className="bg-gray-800 rounded-xl overflow-hidden shadow-lg border border-gray-700 flex flex-col h-full">
       {/* Header */}
       <div className="p-4 bg-gray-800 flex justify-between items-center border-b border-gray-700">
         <div>
-          <h3 className="font-semibold text-white">{camera.name}</h3>
-          <p className="text-xs text-gray-400 font-mono">{camera.ip} • {camera.model}</p>
+          <h3 className="font-semibold text-white truncate max-w-[150px]" title={camera.name}>{camera.name}</h3>
+          <p className="text-xs text-gray-400 font-mono truncate max-w-[150px]">{camera.ip}</p>
         </div>
         <div className="flex items-center gap-2">
-          {isLive && !imgError && (
+          {isLive && imgStatus === 'loaded' && (
              <span className="flex h-2 w-2 relative">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
              </span>
           )}
-          <SignalIcon className={`w-5 h-5 ${!imgError ? 'text-green-500' : 'text-red-500'}`} />
+          <SignalIcon className={`w-5 h-5 ${imgStatus === 'error' ? 'text-red-500' : 'text-green-500'}`} />
         </div>
       </div>
 
       {/* Feed Area */}
-      <div className="relative bg-black aspect-video flex items-center justify-center overflow-hidden">
+      <div className="relative bg-black aspect-video flex items-center justify-center overflow-hidden group">
         <img 
           src={getProxyUrl()} 
           alt={camera.name} 
-          className="w-full h-full object-cover"
+          className={`w-full h-full object-cover transition-opacity duration-500 ${imgStatus === 'loaded' ? 'opacity-100' : 'opacity-40'}`}
           onError={(e) => {
-             setImgError(true);
-             setIsLive(false); // Stop trying to refresh if it fails
+             setImgStatus('error');
+             // Do not stop live, let it retry on next interval
           }}
           onLoad={() => {
-             if (imgError) setImgError(false); // Recovery
+             setImgStatus('loaded');
           }}
         />
         
-        {/* Error Overlay */}
-        {imgError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 p-6 text-center">
-                <SignalIcon className="w-10 h-10 text-red-500 mb-2" />
-                <p className="text-white font-bold text-sm">Sem Sinal / Erro de Autenticação</p>
-                <p className="text-xs text-gray-400 mt-1">Verifique IP, URL (RTSP/HTTP) ou Senha.</p>
-                <button 
-                    onClick={() => { setImgError(false); setIsLive(true); setRefreshTrigger(prev => prev+1); }}
-                    className="mt-4 bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs text-white"
-                >
-                    Tentar Novamente
-                </button>
+        {/* Loading Overlay */}
+        {isLive && imgStatus === 'loading' && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-8 h-8 border-4 border-transparent border-t-orange-500 rounded-full animate-spin"></div>
             </div>
         )}
+
+        {/* Error Overlay */}
+        {imgStatus === 'error' && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/60 p-6 text-center backdrop-blur-sm">
+                <ExclamationCircleIcon className="w-8 h-8 text-red-400 mb-2 animate-pulse" />
+                <p className="text-white font-bold text-xs">Conexão Instável</p>
+                <p className="text-[10px] text-gray-300 mt-1">Tentando reconectar...</p>
+            </div>
+        )}
+
+        {/* Controls Overlay (Hover) */}
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+            <button 
+                onClick={handleSnapshot}
+                className="bg-gray-800/80 p-2 rounded-full hover:bg-white hover:text-black text-white transition-all transform hover:scale-110"
+                title="Tirar Foto"
+            >
+                <PhotoIcon className="w-5 h-5" />
+            </button>
+            <button 
+                 onClick={handleAnalyze}
+                 disabled={isAnalyzing}
+                 className="bg-indigo-600/80 p-2 rounded-full hover:bg-indigo-500 text-white transition-all transform hover:scale-110 disabled:opacity-50"
+                 title="Analisar com IA"
+            >
+                {isAnalyzing ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <SparklesIcon className="w-5 h-5" />}
+            </button>
+        </div>
 
         {/* Status Badge */}
         <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded text-xs text-white font-mono flex items-center gap-2">
@@ -154,52 +177,33 @@ const CameraCard: React.FC<CameraCardProps> = ({ camera }) => {
 
       {/* Analysis Result Box */}
       {analysis && (
-        <div className="p-4 bg-indigo-900/20 border-t border-indigo-500/30">
+        <div className="p-3 bg-indigo-900/40 border-t border-indigo-500/30 flex-1 min-h-[80px]">
           <div className="flex justify-between items-start mb-1">
-             <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1">
-                <SparklesIcon className="w-3 h-3" /> Insight Gemini
+             <h4 className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1">
+                <SparklesIcon className="w-3 h-3" /> Insight IA
              </h4>
-             <button onClick={() => setAnalysis(null)} className="text-xs text-indigo-400 hover:text-white">Fechar</button>
+             <button onClick={() => setAnalysis(null)} className="text-[10px] text-indigo-400 hover:text-white">Fechar</button>
           </div>
-          <p className="text-sm text-indigo-100 leading-relaxed">
+          <p className="text-xs text-indigo-100 leading-relaxed overflow-y-auto max-h-[100px]">
             {analysis}
           </p>
         </div>
       )}
 
       {/* Footer Controls */}
-      <div className="p-3 bg-gray-900 border-t border-gray-800 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-             <button 
-                onClick={handleSnapshot}
-                className="p-2 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
-                title="Salvar Snapshot"
-             >
-                <PhotoIcon className="w-4 h-4" />
-             </button>
-             
-             <button 
-                onClick={handleAnalyze}
-                disabled={isAnalyzing}
-                className="flex items-center gap-2 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold transition-colors disabled:opacity-50"
-                title="Analisar frame atual com IA"
-             >
-                {isAnalyzing ? (
-                  <div className="w-3 h-3 border-2 border-indigo-300/30 border-t-indigo-300 rounded-full animate-spin" />
-                ) : (
-                  <SparklesIcon className="w-3 h-3" />
-                )}
-                Análise IA
-             </button>
-          </div>
-
-          <div className="flex items-center gap-3 text-xs text-gray-500">
-              <span className="hidden sm:inline">Último: {camera.lastEvent || '-'}</span>
-              <button onClick={() => setIsLive(!isLive)} className="hover:text-white uppercase font-bold tracking-wider text-xs">
-                  {isLive ? 'Pausar' : 'Play'}
+      {!analysis && (
+          <div className="p-3 bg-gray-900 border-t border-gray-800 flex items-center justify-between gap-3 mt-auto">
+              <span className="text-[10px] text-gray-500 flex items-center gap-1">
+                {imgStatus === 'loading' ? 'Atualizando...' : imgStatus === 'error' ? 'Falha' : 'Online'}
+              </span>
+              <button 
+                onClick={() => setIsLive(!isLive)} 
+                className={`text-xs font-bold px-3 py-1 rounded border transition-colors ${isLive ? 'border-gray-700 text-gray-400 hover:text-white' : 'bg-green-600 border-green-600 text-white hover:bg-green-500'}`}
+              >
+                  {isLive ? 'PAUSAR' : 'RECONECTAR'}
               </button>
           </div>
-      </div>
+      )}
     </div>
   );
 };
