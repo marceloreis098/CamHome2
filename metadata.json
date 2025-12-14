@@ -1,0 +1,5 @@
+{
+  "name": "Copy of CamHome Surveillance",
+  "description": "A lightweight, AI-powered security dashboard for Orange Pi. Manages IP cameras, monitors storage, and uses Gemini for smart frame analysis.",
+  "requestFramePermissions": []
+}
