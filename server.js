@@ -31,7 +31,11 @@ const jsonDb = {
     read: (filename, defaultValue) => {
         const filePath = path.join(DATA_DIR, filename);
         if (!fs.existsSync(filePath)) {
-            fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2));
+            try {
+                fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2));
+            } catch (e) {
+                console.error(`Error creating ${filename}:`, e);
+            }
             return defaultValue;
         }
         try {
@@ -121,33 +125,46 @@ function startRecording(camera) {
         path.join(camFolder, '%Y-%m-%d_%H-%M-%S.mp4')
     ];
 
-    const proc = spawn('ffmpeg', args);
+    try {
+        const proc = spawn('ffmpeg', args);
 
-    recorders[camera.id] = {
-        process: proc,
-        startTime: Date.now()
-    };
+        // PREVENT CRASH IF FFMPEG IS MISSING
+        proc.on('error', (err) => {
+            console.error(`[NVR] CRITICAL ERROR: Could not spawn ffmpeg for ${camera.name}. Is ffmpeg installed? (sudo apt install ffmpeg). Msg: ${err.message}`);
+            delete recorders[camera.id];
+        });
 
-    proc.on('close', (code) => {
-        console.log(`[NVR] Recording stopped for ${camera.name} (Code ${code})`);
-        delete recorders[camera.id];
-        
-        const wasRunningLongEnough = (Date.now() - (recorders[camera.id]?.startTime || 0)) > 10000;
-        
-        if (code !== 0 || wasRunningLongEnough) {
-            console.log(`[NVR] Restarting ${camera.name} in 15s...`);
-            setTimeout(() => {
-                const currentCams = jsonDb.read('cameras.json', []);
-                const currentCam = currentCams.find(c => c.id === camera.id);
-                if (currentCam) startRecording(currentCam);
-            }, 15000);
-        }
-    });
+        recorders[camera.id] = {
+            process: proc,
+            startTime: Date.now()
+        };
+
+        proc.on('close', (code) => {
+            console.log(`[NVR] Recording stopped for ${camera.name} (Code ${code})`);
+            delete recorders[camera.id];
+            
+            const wasRunningLongEnough = (Date.now() - (recorders[camera.id]?.startTime || 0)) > 10000;
+            
+            // Only restart if it wasn't a spawn error (checked via code usually, or absence of error event)
+            if (code !== 0 || wasRunningLongEnough) {
+                console.log(`[NVR] Restarting ${camera.name} in 15s...`);
+                setTimeout(() => {
+                    const currentCams = jsonDb.read('cameras.json', []);
+                    const currentCam = currentCams.find(c => c.id === camera.id);
+                    if (currentCam) startRecording(currentCam);
+                }, 15000);
+            }
+        });
+    } catch (e) {
+        console.error(`[NVR] Exception spawning ffmpeg: ${e.message}`);
+    }
 }
 
 function stopRecording(cameraId) {
     if (recorders[cameraId]) {
-        recorders[cameraId].process.kill('SIGTERM'); 
+        if(recorders[cameraId].process) {
+            recorders[cameraId].process.kill('SIGTERM'); 
+        }
         delete recorders[cameraId];
     }
 }
@@ -203,13 +220,9 @@ async function getDirRecursive(dirPath, currentDepth = 0) {
 app.get('/api/playback/:cam/:file', (req, res) => {
     const config = jsonDb.read('config.json', DEFAULTS.config);
     const { cam, file } = req.params;
-    
-    // Security sanitization
     const safeCam = sanitize(cam);
     const safeFile = path.basename(file);
-    
     const filePath = path.join(config.recordingPath, safeCam, safeFile);
-    
     if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
     res.sendFile(filePath);
 });
@@ -217,7 +230,6 @@ app.get('/api/playback/:cam/:file', (req, res) => {
 app.get('/api/playback/:cam/:file/thumb', (req, res) => {
     const config = jsonDb.read('config.json', DEFAULTS.config);
     const { cam, file } = req.params;
-    
     const safeCam = sanitize(cam);
     const safeFile = path.basename(file);
     const videoPath = path.join(config.recordingPath, safeCam, safeFile);
@@ -228,10 +240,10 @@ app.get('/api/playback/:cam/:file/thumb', (req, res) => {
     } 
     
     if (fs.existsSync(videoPath)) {
-        // Generate thumb on the fly
-        exec(`ffmpeg -i "${videoPath}" -ss 00:00:01 -vframes 1 "${thumbPath}"`, (err) => {
+        // Only run generation if ffmpeg is available
+        const proc = exec(`ffmpeg -i "${videoPath}" -ss 00:00:01 -vframes 1 "${thumbPath}"`, (err) => {
             if (!err && fs.existsSync(thumbPath)) res.sendFile(thumbPath);
-            else res.status(500).send('Generating...');
+            else res.status(500).send('Generating failed or ffmpeg missing');
         });
     } else {
         res.status(404).send('Video not found');
@@ -278,15 +290,12 @@ app.get('/api/recordings', async (req, res) => {
             
             for (const file of files) {
                 if (!file.endsWith('.mp4')) continue;
-                
                 const stat = fs.statSync(path.join(folderPath, file));
-                
                 recordings.push({
                     id: file,
                     cameraId: folder.name, 
                     cameraName: folder.name.replace(/_/g, ' ').toUpperCase(),
                     timestamp: stat.birthtime,
-                    // URL scheme: /api/playback/<folder>/<filename>
                     videoUrl: `/api/playback/${folder.name}/${file}`,
                     thumbnailUrl: `/api/playback/${folder.name}/${file}/thumb`,
                     type: 'video',
@@ -316,6 +325,10 @@ app.post('/api/config', (req, res) => {
 // Proxy
 app.get('/api/proxy', async (req, res) => {
     try {
+        if (typeof fetch === 'undefined') {
+            throw new Error("Node.js version outdated. Please update to Node 20+ to use Proxy.");
+        }
+
         const { url, username, password } = req.query;
         if (!url) throw new Error("URL missing");
         
@@ -337,6 +350,12 @@ app.get('/api/rtsp-snapshot', (req, res) => {
     let { url } = req.query;
     if (!url) return res.status(400).send('RTSP URL missing');
     const ffmpeg = spawn('ffmpeg', ['-y', '-rtsp_transport', 'tcp', '-i', url, '-f', 'image2', '-vframes', '1', '-q:v', '5', '-']);
+    
+    ffmpeg.on('error', (err) => {
+        console.error('Failed to spawn ffmpeg for snapshot:', err);
+        res.status(500).send('FFMPEG missing on server');
+    });
+
     res.contentType('image/jpeg');
     ffmpeg.stdout.pipe(res);
 });
@@ -360,6 +379,10 @@ app.get('/api/scan', (req, res) => {
     const subnet = req.query.subnet || getLocalNetwork();
     console.log(`Scanning ${subnet}...`);
     exec(`nmap -sn ${subnet}`, { timeout: 20000 }, (err, stdout) => {
+        if (err) {
+            console.error("Scan error:", err);
+            return res.json([]); // Return empty if nmap missing or fails
+        }
         const devices = [];
         const lines = stdout.split('\n');
         let currentIp = null;
@@ -380,7 +403,8 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html
 
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    initializeRecorder(); // Start NVR
+    // Delay initialization slightly to ensure process stability
+    setTimeout(initializeRecorder, 1000);
 });
 
 server.on('error', (e) => {

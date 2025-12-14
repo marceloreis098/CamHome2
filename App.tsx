@@ -300,12 +300,20 @@ const App: React.FC = () => {
                   <CogIcon className="w-6 h-6 text-red-400" />
                </div>
                <div>
-                  <h3 className="font-bold text-sm">Servidor Backend Offline</h3>
+                  <h3 className="font-bold text-sm">Servidor Backend Offline (Crash Loop Detectado)</h3>
                   <p className="text-xs mt-1">
-                     O núcleo do sistema (Node.js) não está respondendo. O scan de rede e salvamento de configurações não funcionarão.
+                     O sistema Node.js está reiniciando constantemente (uptime 0s). 
                      <br/>
-                     <span className="font-mono bg-black/30 px-1 rounded select-all cursor-text">sudo pm2 start ecosystem.config.js</span>
+                     <b>Possível causa:</b> 'ffmpeg' não instalado ou erro de permissão.
+                     <br/>
+                     <span className="font-mono bg-black/30 px-1 rounded select-all cursor-text">sudo apt install ffmpeg</span> ou verifique logs: <span className="font-mono bg-black/30 px-1 rounded select-all cursor-text">pm2 logs</span>
                   </p>
+                  <button 
+                     onClick={() => window.location.reload()} 
+                     className="mt-2 text-xs bg-red-800 hover:bg-red-700 px-3 py-1 rounded text-white font-bold"
+                  >
+                     Tentar Reconectar
+                  </button>
                </div>
            </div>
         )}
